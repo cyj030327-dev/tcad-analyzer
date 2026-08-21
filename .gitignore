@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+*.spec
+sample_data/plt/*.plt
+sample_data/plt/*.cmd
+sample_data/plt/gtree.dat
+sample_data/plt/edge_cases/
+sample_data/tables/*.csv
+!sample_data/.gitkeep
