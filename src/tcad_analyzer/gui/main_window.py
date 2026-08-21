@@ -51,8 +51,3 @@ class MainWindow(QMainWindow):
 
         self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.nav_list.setCurrentRow(0)
-
-        # 지난번에 쓰던 폴더가 있으면 자동으로 다시 불러와서, 켤 때마다 폴더를 새로 고르지
-        # 않아도 되게 한다(모든 페이지가 이미 구성되어 importChanged 시그널을 받을 수 있는
-        # 상태가 된 뒤에 호출해야 Import 페이지 목록 등이 정상적으로 채워진다).
-        self.controller.restore_last_session_folder()
