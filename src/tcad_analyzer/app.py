@@ -7,12 +7,10 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from .gui.main_window import MainWindow
-from .gui.theme import SSU_LIGHT_QSS
 
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setStyleSheet(SSU_LIGHT_QSS)
     window = MainWindow()
     window.show()
     return app.exec()
