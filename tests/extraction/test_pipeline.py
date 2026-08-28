@@ -26,17 +26,28 @@ def test_extract_parameters_returns_vth_ss_ion_ioff_gm():
 
 def test_extract_for_collection_isolates_curve_failures():
     good = _id_vg_curve("good", 0.4, {"T": "900"})
-    # 기준전류가 데이터 범위를 벗어나 CC Vth 추출이 실패하도록 구성
-    bad_config_curve = _id_vg_curve("bad", 0.4, {"T": "950"})
+    # 포인트가 1개뿐이라 Vth/SS/Ion-Ioff/gm이 전부 진짜로 계산 불가능한(2개 미만) curve —
+    # 기준전류가 범위 밖인 것 정도로는 더 이상 실패하지 않으므로(외삽으로 처리됨), 진짜
+    # 계산 자체가 불가능한 경우로 실패를 유도해야 한다.
+    bad_curve = Curve(
+        curve_id="bad",
+        curve_type=CurveType.ID_VG,
+        device=DeviceMeta(device_id="n", polarity=Polarity.NMOS),
+        split=SplitCondition(attributes={"T": "950"}),
+        vg=np.array([0.4]),
+        id_=np.array([1e-12]),
+        vd=0.05,
+    )
 
-    curves = CurveCollection([good, bad_config_curve])
-    config = ExtractionConfig(cc_current_ref=999.0, cc_normalize_by_wl=False)  # 절대 못 만나는 큰 전류
+    curves = CurveCollection([good, bad_curve])
+    config = ExtractionConfig(cc_current_ref=1e-12, cc_normalize_by_wl=False)
 
     params, failures = extract_for_collection(curves, config)
 
-    # 두 curve 모두 CC 방식은 실패하지만, SS/Ion/Ioff/gm은 성공해야 한다(부분 성공 격리 확인)
-    assert any(p.param_name == "SS" for p in params)
-    assert any("Vth" in msg for _cid, msg in failures)
+    # good curve는 bad curve의 실패에 영향받지 않고 온전히 성공해야 한다(격리 확인)
+    assert any(p.curve_id == "good" and p.param_name == "SS" for p in params)
+    assert not any(p.curve_id == "bad" for p in params)
+    assert any(cid == "bad" for cid, _msg in failures)
 
 
 def test_extract_parameters_warns_when_sweep_does_not_reach_off_region():
@@ -76,6 +87,86 @@ def test_extract_parameters_no_warning_when_sweep_covers_off_region():
     outcome = extract_parameters(curve, config)
 
     assert outcome.warnings == []
+
+
+def test_extract_parameters_warns_when_cc_vth_is_extrapolated():
+    curve = _id_vg_curve("c1", 0.4, {"T": "900"})
+    # 데이터 최대 전류보다 훨씬 큰 기준전류 -> 더 이상 실패하지 않고 외삽 + 경고
+    config = ExtractionConfig(cc_current_ref=1.0, cc_normalize_by_wl=False)
+
+    outcome = extract_parameters(curve, config)
+
+    assert any(p.param_name == "Vth_CC" for p in outcome.parameters)
+    assert any(name == "Vth_CC" for name, _ in outcome.warnings)
+    assert not any(name == "Vth" for name, _ in outcome.failures)
+
+
+def test_extract_parameters_warns_when_ss_slope_is_exactly_flat():
+    # log(Id)가 완전히 평평한(잡음도 없는) 구간 -> 기울기 0 -> SS가 inf로 계산되고 경고가 붙음
+    vg = np.linspace(0.0, 1.0, 20)
+    id_ = np.full_like(vg, 1e-9)
+    device = DeviceMeta(device_id="n", polarity=Polarity.NMOS)
+    split = SplitCondition(attributes={"T": "900"})
+    curve = Curve(
+        curve_id="c1",
+        curve_type=CurveType.ID_VG,
+        device=device,
+        split=split,
+        vg=vg,
+        id_=id_,
+        vd=0.05,
+    )
+
+    outcome = extract_parameters(curve, ExtractionConfig())
+
+    ss_param = next(p for p in outcome.parameters if p.param_name == "SS")
+    assert np.isinf(ss_param.value)
+    assert any(name == "SS" for name, _ in outcome.warnings)
+
+
+def test_extract_parameters_warns_when_ion_ioff_ratio_is_infinite():
+    vg = np.array([0.0, 0.5, 1.0, 1.5, 2.0])
+    id_ = np.array([0.0, 0.0, 1e-9, 1e-6, 1e-3])
+    device = DeviceMeta(device_id="n", polarity=Polarity.NMOS)
+    split = SplitCondition(attributes={"T": "900"})
+    curve = Curve(
+        curve_id="c1",
+        curve_type=CurveType.ID_VG,
+        device=device,
+        split=split,
+        vg=vg,
+        id_=id_,
+        vd=0.05,
+    )
+
+    outcome = extract_parameters(curve, ExtractionConfig())
+
+    ratio_param = next(p for p in outcome.parameters if p.param_name == "Ion_Ioff_ratio")
+    assert np.isinf(ratio_param.value)
+    assert any(name == "Ion_Ioff_ratio" for name, _ in outcome.warnings)
+
+
+def test_extract_parameters_warns_when_ron_slope_is_exactly_flat():
+    vd_array = np.linspace(0.0, 1.2, 20)
+    id_ = np.full_like(vd_array, 1e-6)  # Vd가 변해도 전류가 전혀 안 변함 -> 기울기 0
+    vg = np.full_like(vd_array, 5.0)
+    device = DeviceMeta(device_id="n", polarity=Polarity.NMOS)
+    split = SplitCondition(attributes={"T": "900"})
+    curve = Curve(
+        curve_id="c1",
+        curve_type=CurveType.ID_VD,
+        device=device,
+        split=split,
+        vg=vg,
+        id_=id_,
+        vd_array=vd_array,
+    )
+
+    outcome = extract_parameters(curve, ExtractionConfig())
+
+    ron_param = next(p for p in outcome.parameters if p.param_name == "Ron")
+    assert np.isinf(ron_param.value)
+    assert any(name == "Ron" for name, _ in outcome.warnings)
 
 
 def test_extract_parameters_skips_mobility_when_cox_not_configured():

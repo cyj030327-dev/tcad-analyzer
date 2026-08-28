@@ -10,6 +10,8 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
+import numpy as np
+
 from ..models import Curve, CurveCollection, CurveType, ExtractedParameter
 from .config import ExtractionConfig
 from .dibl import extract_dibl, find_dibl_pair
@@ -18,7 +20,12 @@ from .id_vd_metrics import extract_gds, extract_ron
 from .ion_ioff import extract_ion_ioff
 from .mobility import extract_mobility_saturation, resolve_cox_f_cm2
 from .ss import extract_ss
-from .vth import extract_gm_max, extract_vth_constant_current, extract_vth_linear_extrapolation
+from .vth import (
+    _cc_reference_current,
+    extract_gm_max,
+    extract_vth_constant_current,
+    extract_vth_linear_extrapolation,
+)
 
 # Ion/Ioff 비율이 이보다 작으면(= decade 차이가 얼마 안 나면), 스윕이 진짜 off 영역까지
 # 못 내려가서 "Ioff"가 사실상 off 전류가 아닐 가능성이 크다고 보고 경고를 낸다.
@@ -59,6 +66,19 @@ def extract_parameters(curve: Curve, config: ExtractionConfig) -> ExtractionOutc
             if config.vth_method == "constant_current":
                 vth = extract_vth_constant_current(curve.vg, curve.id_, config, device)
                 _add("Vth_CC", vth, "V", "constant_current")
+                # 기준전류가 측정 범위 밖이면 vth.py가 실패 대신 외삽으로 값을 낸다 —
+                # 여기서 같은 범위를 다시 확인해 "이 값은 외삽됐다"고 알려준다.
+                abs_id = np.abs(curve.id_)
+                i_ref = _cc_reference_current(config, device)
+                if abs_id.size and (i_ref < abs_id.min() or i_ref > abs_id.max()):
+                    outcome.warnings.append(
+                        (
+                            "Vth_CC",
+                            f"기준전류({i_ref:.3e} A)가 측정된 전류 범위"
+                            f"[{abs_id.min():.3e}, {abs_id.max():.3e}] A를 벗어나 있어, "
+                            "가장 가까운 두 점으로 직선을 연장한 외삽값입니다.",
+                        )
+                    )
             else:
                 vth = extract_vth_linear_extrapolation(curve.vg, curve.id_, curve.vd, config)
                 _add("Vth_SD", vth, "V", "linear_extrapolation")
@@ -68,8 +88,17 @@ def extract_parameters(curve: Curve, config: ExtractionConfig) -> ExtractionOutc
         try:
             ss_value, diagnostics = extract_ss(curve.vg, curve.id_, config)
             _add("SS", ss_value, "mV/dec", "regression", diagnostics)
-            if diagnostics.get("low_confidence"):
-                lo, hi = diagnostics["vg_range"]
+            lo, hi = diagnostics["vg_range"]
+            if diagnostics.get("flat_slope"):
+                outcome.warnings.append(
+                    (
+                        "SS",
+                        f"사용 구간({lo:.2f}~{hi:.2f}V)에서 log(Id)가 완전히 평평해 기울기가 0입니다 — "
+                        "SS가 수학적으로 무한대(inf)로 계산됐습니다. subthreshold다운 변화가 전혀 "
+                        "없는 구간을 골랐을 가능성이 큽니다.",
+                    )
+                )
+            elif diagnostics.get("low_confidence"):
                 outcome.warnings.append(
                     (
                         "SS",
@@ -86,7 +115,15 @@ def extract_parameters(curve: Curve, config: ExtractionConfig) -> ExtractionOutc
             _add("Ion", ion, "A", "point_read")
             _add("Ioff", ioff, "A", "point_read")
             _add("Ion_Ioff_ratio", ratio, "", "derived")
-            if ratio < MIN_ON_OFF_RATIO_FOR_TRUE_OFF:
+            if math.isinf(ratio):
+                outcome.warnings.append(
+                    (
+                        "Ion_Ioff_ratio",
+                        "Ioff가 정확히 0으로 측정돼(전류 noise floor 등) 비율이 수학적으로 "
+                        "무한대(inf)로 계산됐습니다.",
+                    )
+                )
+            elif ratio < MIN_ON_OFF_RATIO_FOR_TRUE_OFF:
                 # Ion/Ioff가 몇 decade 안 되면, 스윕이 진짜 off(subthreshold) 영역까지
                 # 못 내려가서 "Ioff"가 사실 off 전류가 아니라 스윕 시작점의 전류일 가능성이
                 # 크다. 이 경우 SS도 실제보다 나쁘게(크게) 계산된다.
@@ -124,6 +161,10 @@ def extract_parameters(curve: Curve, config: ExtractionConfig) -> ExtractionOutc
             try:
                 ron = extract_ron(curve.vd_array, curve.id_, config)
                 _add("Ron", ron, "ohm", "linear_fit")
+                if math.isinf(ron):
+                    outcome.warnings.append(
+                        ("Ron", "선형영역 기울기가 정확히 0이라 Ron이 수학적으로 무한대(inf)로 계산됐습니다.")
+                    )
             except ExtractionError as exc:
                 outcome.failures.append(("Ron", str(exc)))
             try:

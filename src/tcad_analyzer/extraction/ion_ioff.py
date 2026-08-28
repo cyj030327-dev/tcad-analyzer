@@ -41,8 +41,7 @@ def extract_ion_ioff(
     ion = float(np.interp(ion_vg_point, vg_s, abs_id_s))
     ioff = float(np.interp(ioff_vg_point, vg_s, abs_id_s))
 
-    if ioff <= 0:
-        raise ExtractionError("Ioff가 0 이하라 Ion/Ioff ratio를 계산할 수 없습니다")
-
-    ratio = ion / ioff
+    # Ioff가 정확히 0으로 측정되면(시뮬레이션 noise floor 등) 비율은 수학적으로 무한대다 —
+    # 실패시키는 대신 Ion/Ioff는 그대로 두고 ratio만 inf로 낸다(pipeline.py가 경고로 표시).
+    ratio = (ion / ioff) if ioff > 0 else float("inf")
     return ion, ioff, ratio

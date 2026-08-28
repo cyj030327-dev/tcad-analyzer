@@ -68,8 +68,8 @@ def extract_ss(vg: np.ndarray, id_: np.ndarray, config: ExtractionConfig) -> Tup
     valid = abs_id > 0
     vg_valid = vg[valid]
     abs_id_valid = abs_id[valid]
-    if len(vg_valid) < 3:
-        raise ExtractionError("SS 계산을 위한 유효한(0이 아닌 전류) 데이터 포인트가 부족합니다")
+    if len(vg_valid) < 2:
+        raise ExtractionError("SS 계산을 위한 유효한(0이 아닌 전류) 데이터 포인트가 부족합니다(최소 2개 필요)")
 
     order = np.argsort(vg_valid)
     vg_s = vg_valid[order]
@@ -80,23 +80,34 @@ def extract_ss(vg: np.ndarray, id_: np.ndarray, config: ExtractionConfig) -> Tup
         mask = (vg_s >= lo) & (vg_s <= hi)
         vg_fit = vg_s[mask]
         log_id_fit = log_id[mask]
-        if len(vg_fit) < 3:
-            raise ExtractionError("지정한 SS 구간에 데이터 포인트가 부족합니다")
+        if len(vg_fit) < 2:
+            raise ExtractionError("지정한 SS 구간에 데이터 포인트가 부족합니다(최소 2개 필요)")
         r2_hint = None
     else:
         vg_fit, log_id_fit, r2_hint = _auto_detect_subthreshold_region(vg_s, log_id)
 
-    slope, intercept = np.polyfit(vg_fit, log_id_fit, 1)
-    if slope == 0:
-        raise ExtractionError("subthreshold 기울기가 0이라 SS를 계산할 수 없습니다")
-
+    # log(Id) 값이 전부 완전히 똑같으면(진짜로 평평함) 수학적으로 기울기는 정확히 0이어야
+    # 하지만, np.polyfit의 최소자승 계산(SVD 기반)은 부동소수점 잡음 때문에 정확히 0이 아닌
+    # 극도로 작은 값(예: 1e-14)을 내놓을 수 있다 — 그러면 SS/Ron 같은 1/slope 계산이 "거의
+    # 무한대"인 비현실적으로 큰 값(예: 1e16)을 내면서도 "성공"으로 보여 오히려 더 헷갈린다.
+    # 그래서 y값이 전부 동일한지 먼저 직접 확인해 이 경우엔 기울기를 정확히 0으로 취급한다.
+    if log_id_fit.max() == log_id_fit.min():
+        slope, intercept = 0.0, float(log_id_fit[0])
+    else:
+        slope, intercept = np.polyfit(vg_fit, log_id_fit, 1)
     r2 = r2_hint if r2_hint is not None else _r_squared(vg_fit, log_id_fit, slope, intercept)
-    ss_value = abs(1.0 / slope) * 1000.0  # V/decade -> mV/decade
+
+    # 기울기가 정확히 0이면(완전히 평평한 구간) SS=1/slope는 수학적으로 무한대다 — 실패로
+    # 치지 않고 그 자체를 값으로 낸다("subthreshold다운 변화가 전혀 없다"는 정직한 신호),
+    # 대신 신뢰도는 항상 낮음으로 표시한다.
+    is_flat = slope == 0
+    ss_value = float("inf") if is_flat else abs(1.0 / slope) * 1000.0  # V/decade -> mV/decade
 
     diagnostics = {
         "r2": float(r2),
         "vg_range": (float(vg_fit.min()), float(vg_fit.max())),
         "n_points": int(len(vg_fit)),
-        "low_confidence": bool(r2 < config.ss_min_r2),
+        "low_confidence": bool(is_flat or r2 < config.ss_min_r2),
+        "flat_slope": is_flat,
     }
-    return float(ss_value), diagnostics
+    return ss_value, diagnostics

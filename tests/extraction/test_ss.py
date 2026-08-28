@@ -51,3 +51,27 @@ def test_ss_flags_low_confidence_on_noisy_flat_region():
 
     assert diag["r2"] < 0.98
     assert diag["low_confidence"] is True
+
+
+def test_ss_is_infinite_when_current_is_perfectly_flat():
+    # log(Id)가 완전히 평평하면(=기울기 0) 실패시키지 않고 SS를 무한대로 낸다 —
+    # "subthreshold다운 변화가 전혀 없다"는 정직한 신호.
+    vg = np.linspace(-0.2, 0.6, 50)
+    id_ = np.full_like(vg, 1e-10)
+
+    ss_value, diag = extract_ss(vg, id_, ExtractionConfig())
+
+    assert np.isinf(ss_value)
+    assert diag["flat_slope"] is True
+    assert diag["low_confidence"] is True
+
+
+def test_ss_works_with_exactly_two_points():
+    # 최소 요구치를 3개에서 2개로 낮췄다 — 2개면 직선 하나는 정의할 수 있으므로 성공해야 한다
+    vg = np.array([0.0, 0.1])
+    id_ = np.array([1e-12, 1e-11])
+
+    ss_value, diag = extract_ss(vg, id_, ExtractionConfig(ss_vg_range=(0.0, 0.1)))
+
+    assert np.isfinite(ss_value)
+    assert diag["n_points"] == 2

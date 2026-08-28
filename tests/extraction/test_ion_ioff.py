@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 
@@ -37,10 +39,22 @@ def test_explicit_ion_ioff_vg_override():
     assert ioff == pytest.approx(1e-13)
 
 
-def test_raises_when_ioff_is_zero():
+def test_ratio_is_infinite_when_ioff_is_zero():
+    # Ioff가 정확히 0으로 측정되면 비율은 수학적으로 무한대다 — 실패시키지 않고 그 자체를
+    # 값으로 낸다("항상 값이 나온다"는 방향으로 설계 변경, 안 되는 걸 억지로 그럴듯한
+    # 가짜 숫자로 꾸미는 게 아니라 정직하게 inf로 표시).
     vg = np.array([0.0, 1.0])
     id_ = np.array([0.0, 1e-3])
     device = DeviceMeta(device_id="n", polarity=Polarity.NMOS)
 
+    ion, ioff, ratio = extract_ion_ioff(vg, id_, ExtractionConfig(), device)
+
+    assert ioff == 0.0
+    assert ion == pytest.approx(1e-3)
+    assert math.isinf(ratio)
+
+
+def test_raises_when_fewer_than_two_points():
+    device = DeviceMeta(device_id="n", polarity=Polarity.NMOS)
     with pytest.raises(ExtractionError):
-        extract_ion_ioff(vg, id_, ExtractionConfig(), device)
+        extract_ion_ioff(np.array([0.0]), np.array([1e-3]), ExtractionConfig(), device)

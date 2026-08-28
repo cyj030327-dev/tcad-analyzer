@@ -43,15 +43,41 @@ def test_cc_normalizes_by_wl_ratio():
     assert vth == pytest.approx(expected, abs=2e-3)
 
 
-def test_cc_raises_when_reference_current_out_of_range():
+def test_cc_extrapolates_above_measured_range_instead_of_failing():
+    # "안 되는 건 안 되는 거지만"(2점 미만처럼 진짜 계산 불가능한 경우만 실패), 기준전류가
+    # 범위 밖이라는 이유만으로는 실패시키지 않고 가장 가까운 두 점으로 직선을 연장한다.
     vg = np.linspace(-0.2, 1.2, 100)
     id_ = 1e-12 * np.exp((vg - 0.4) / 0.05)
 
     device = DeviceMeta(device_id="test", polarity=Polarity.NMOS)
-    config = ExtractionConfig(cc_current_ref=1.0, cc_normalize_by_wl=False)  # 절대 도달 못하는 큰 전류
+    config = ExtractionConfig(cc_current_ref=1.0, cc_normalize_by_wl=False)  # 데이터 최대 전류보다 훨씬 큼
+
+    vth = extract_vth_constant_current(vg, id_, config, device)
+
+    # 더 큰 전류를 요구했으니 외삽 방향도 Vg가 더 커지는 쪽이어야 한다
+    assert vth > vg.max()
+    assert np.isfinite(vth)
+
+
+def test_cc_extrapolates_below_measured_range_instead_of_failing():
+    vg = np.linspace(-0.2, 1.2, 100)
+    id_ = 1e-12 * np.exp((vg - 0.4) / 0.05)
+
+    device = DeviceMeta(device_id="test", polarity=Polarity.NMOS)
+    config = ExtractionConfig(cc_current_ref=1e-20, cc_normalize_by_wl=False)  # 데이터 최소 전류보다 훨씬 작음
+
+    vth = extract_vth_constant_current(vg, id_, config, device)
+
+    assert vth < vg.min()
+    assert np.isfinite(vth)
+
+
+def test_cc_raises_when_fewer_than_two_points():
+    device = DeviceMeta(device_id="test", polarity=Polarity.NMOS)
+    config = ExtractionConfig(cc_current_ref=1e-12, cc_normalize_by_wl=False)
 
     with pytest.raises(ExtractionError):
-        extract_vth_constant_current(vg, id_, config, device)
+        extract_vth_constant_current(np.array([0.0]), np.array([1e-12]), config, device)
 
 
 def test_linear_extrapolation_recovers_exact_vth_on_pure_linear_curve():
@@ -89,3 +115,30 @@ def test_gm_max_matches_known_slope():
     gm = extract_gm_max(vg, id_)
 
     assert gm == pytest.approx(k, rel=1e-3)
+
+
+def test_linear_extrapolation_works_with_exactly_two_points():
+    # 최소 요구치를 3개에서 2개로 낮췄다 — 2개면 직선 하나는 정의할 수 있으므로 성공해야 한다
+    vg = np.array([0.5, 0.6])
+    id_ = np.array([1e-5, 2e-5])
+
+    vth = extract_vth_linear_extrapolation(vg, id_, vd=None, config=ExtractionConfig())
+
+    assert np.isfinite(vth)
+
+
+def test_linear_extrapolation_raises_with_single_point():
+    with pytest.raises(ExtractionError):
+        extract_vth_linear_extrapolation(
+            np.array([0.5]), np.array([1e-5]), vd=None, config=ExtractionConfig()
+        )
+
+
+def test_gm_max_works_with_exactly_two_points():
+    gm = extract_gm_max(np.array([0.5, 0.6]), np.array([1e-5, 2e-5]))
+    assert gm == pytest.approx(1e-4, rel=1e-6)
+
+
+def test_gm_max_raises_with_single_point():
+    with pytest.raises(ExtractionError):
+        extract_gm_max(np.array([0.5]), np.array([1e-5]))

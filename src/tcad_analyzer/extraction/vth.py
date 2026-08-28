@@ -20,30 +20,42 @@ def _cc_reference_current(config: ExtractionConfig, device: DeviceMeta) -> float
 def extract_vth_constant_current(
     vg: np.ndarray, id_: np.ndarray, config: ExtractionConfig, device: DeviceMeta
 ) -> float:
-    """|Id(Vg)| = I_ref가 되는 Vg를 보간으로 계산.
+    """|Id(Vg)| = I_ref가 되는 Vg를 보간(또는 범위 밖이면 외삽)으로 계산.
 
     I_ref = cc_current_ref * (W/L) (W/L 정보 있고 정규화 옵션 켜져 있을 때), 아니면
     cc_current_ref를 절대 전류값으로 그대로 사용.
+
+    기준전류가 측정된 |Id| 범위를 벗어나도 실패시키지 않고, 가장 가까운 두 점으로 직선을
+    연장해 값을 낸다 — "값이 아예 안 나온다"보다는 "이 값은 외삽된 것"이라고 경고로
+    알려주는 편이 낫다는 판단(경고는 pipeline.py에서 같은 범위 검사를 다시 해서 붙인다).
+    데이터가 2개 미만이면(직선조차 못 그음) 그때만 진짜로 실패한다.
     """
     abs_id = np.abs(np.asarray(id_, dtype=float))
     vg = np.asarray(vg, dtype=float)
     if len(abs_id) < 2:
-        raise ExtractionError("CC 방식 Vth 계산을 위한 데이터 포인트가 부족합니다")
+        raise ExtractionError("CC 방식 Vth 계산을 위한 데이터 포인트가 부족합니다(최소 2개 필요)")
 
     i_ref = _cc_reference_current(config, device)
-    if i_ref < abs_id.min() or i_ref > abs_id.max():
-        raise ExtractionError(
-            f"기준 전류({i_ref:.3e} A)가 데이터의 전류 범위"
-            f"[{abs_id.min():.3e}, {abs_id.max():.3e}] A를 벗어납니다"
-        )
 
-    # |Id|를 기준으로 정렬해 np.interp(단조증가 x축 요구)에 맞춘다. 곡선이 완벽히
-    # 단조가 아니어도(약간의 noise) 합리적인 근사값을 준다.
+    # |Id|를 기준으로 정렬해 단조증가 x축을 만든다. 곡선이 완벽히 단조가 아니어도(약간의
+    # noise) 합리적인 근사값을 준다.
     order = np.argsort(abs_id)
     abs_id_sorted = abs_id[order]
     vg_sorted = vg[order]
-    vth = float(np.interp(i_ref, abs_id_sorted, vg_sorted))
-    return vth
+
+    if i_ref < abs_id_sorted[0] or i_ref > abs_id_sorted[-1]:
+        # np.interp는 범위 밖이면 그냥 끝점 값으로 clamp해버려서(=은근슬쩍 틀린 값을
+        # 맞는 값처럼 보이게 함) 대신 두 끝점으로 직선을 그어 명시적으로 외삽한다.
+        if i_ref < abs_id_sorted[0]:
+            x0, x1, y0, y1 = abs_id_sorted[0], abs_id_sorted[1], vg_sorted[0], vg_sorted[1]
+        else:
+            x0, x1, y0, y1 = abs_id_sorted[-2], abs_id_sorted[-1], vg_sorted[-2], vg_sorted[-1]
+        if x1 == x0:
+            return float(y1)
+        slope = (y1 - y0) / (x1 - x0)
+        return float(y0 + slope * (i_ref - x0))
+
+    return float(np.interp(i_ref, abs_id_sorted, vg_sorted))
 
 
 def extract_vth_linear_extrapolation(
@@ -71,8 +83,8 @@ def extract_vth_linear_extrapolation(
     else:
         vg_fit, id_fit = vg_s, id_s
 
-    if len(vg_fit) < 3:
-        raise ExtractionError("Linear Extrapolation 방식을 위한 데이터 포인트가 부족합니다")
+    if len(vg_fit) < 2:
+        raise ExtractionError("Linear Extrapolation 방식을 위한 데이터 포인트가 부족합니다(최소 2개 필요)")
 
     gm = np.gradient(id_fit, vg_fit)
     # 배열 경계에서는 gradient가 부정확할 수 있어 가능하면 양 끝을 제외하고 탐색
@@ -100,7 +112,7 @@ def extract_gm_max(vg: np.ndarray, id_: np.ndarray) -> float:
     order = np.argsort(vg)
     vg_s = vg[order]
     id_s = id_[order]
-    if len(vg_s) < 3:
-        raise ExtractionError("gm 계산을 위한 데이터 포인트가 부족합니다")
+    if len(vg_s) < 2:
+        raise ExtractionError("gm 계산을 위한 데이터 포인트가 부족합니다(최소 2개 필요)")
     gm = np.gradient(id_s, vg_s)
     return float(np.max(np.abs(gm)))
