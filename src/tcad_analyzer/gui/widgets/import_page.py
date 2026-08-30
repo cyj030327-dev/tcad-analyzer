@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..controllers.project_controller import ProjectController
+from ..project_file import load_project, save_project
 
 
 class ImportPage(QWidget):
@@ -34,6 +35,21 @@ class ImportPage(QWidget):
         )
         info.setWordWrap(True)
         layout.addWidget(info)
+
+        project_row = QHBoxLayout()
+        self.btn_save_project = QPushButton("프로젝트 저장...")
+        self.btn_load_project = QPushButton("프로젝트 열기...")
+        project_row.addWidget(self.btn_save_project)
+        project_row.addWidget(self.btn_load_project)
+        project_row.addStretch(1)
+        layout.addLayout(project_row)
+        project_hint = QLabel(
+            "지금까지 임포트한 파일 구성 + Column Mapping에서 고친 값 + 추출 설정을 파일 "
+            "하나로 저장해뒀다가, 나중에 \"프로젝트 열기\"로 그대로 불러와 이어서 작업할 수 "
+            "있습니다(원본 .plt/.cmd/gtree.dat 파일이 저장 당시와 같은 경로에 있어야 합니다)."
+        )
+        project_hint.setWordWrap(True)
+        layout.addWidget(project_hint)
 
         btn_row = QHBoxLayout()
         self.btn_files = QPushButton("파일 선택...")
@@ -69,6 +85,8 @@ class ImportPage(QWidget):
         self.btn_refresh.clicked.connect(self._on_refresh)
         self.btn_remove.clicked.connect(self._on_remove_selected)
         self.btn_clear.clicked.connect(self._on_clear_all)
+        self.btn_save_project.clicked.connect(self._on_save_project)
+        self.btn_load_project.clicked.connect(self._on_load_project)
         self.controller.importChanged.connect(self._refresh_table)
 
     def _on_select_files(self) -> None:
@@ -110,6 +128,44 @@ class ImportPage(QWidget):
         )
         if answer == QMessageBox.Yes:
             self.controller.clear_all_imports()
+
+    def _on_save_project(self) -> None:
+        if not self.controller.import_status:
+            QMessageBox.information(self, "저장할 내용 없음", "먼저 파일을 임포트하세요.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "프로젝트 저장", "project.tcadproj", "TCAD 프로젝트 (*.tcadproj);;모든 파일 (*)"
+        )
+        if not path:
+            return
+        try:
+            save_project(self.controller, Path(path))
+        except OSError as exc:
+            QMessageBox.warning(self, "저장 실패", f"프로젝트를 저장하지 못했습니다: {exc}")
+            return
+        QMessageBox.information(self, "저장 완료", f"프로젝트를 저장했습니다:\n{path}")
+
+    def _on_load_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "프로젝트 열기", "", "TCAD 프로젝트 (*.tcadproj);;모든 파일 (*)"
+        )
+        if not path:
+            return
+        try:
+            result = load_project(self.controller, Path(path))
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "열기 실패", f"프로젝트를 여는 데 실패했습니다: {exc}")
+            return
+
+        msg = (
+            f"파일 {result.restored_plt_count + result.restored_table_count}개, "
+            f"curve {len(self.controller.curves)}개, "
+            f"파라미터 {len(self.controller.extracted_params)}개를 복원했습니다."
+        )
+        if result.missing_files:
+            missing_list = "\n".join(result.missing_files)
+            msg += f"\n\n⚠ 다음 파일을 찾을 수 없어 건너뛰었습니다:\n{missing_list}"
+        QMessageBox.information(self, "열기 완료", msg)
 
     def _refresh_table(self) -> None:
         statuses = self.controller.import_status
