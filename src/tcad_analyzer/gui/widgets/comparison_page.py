@@ -116,7 +116,13 @@ class ComparisonPage(QWidget):
         self.device_combo.blockSignals(False)
 
         names = self._param_names()
-        for combo in (self.dist_param_combo, self.corr_x_combo, self.corr_y_combo, self.sens_metric_combo):
+        for combo in (
+            self.dist_param_combo,
+            self.corr_x_combo,
+            self.corr_y_combo,
+            self.sens_metric_combo,
+            self.regression_metric_combo,
+        ):
             current = combo.currentText()
             combo.blockSignals(True)
             combo.clear()
@@ -409,6 +415,13 @@ class ComparisonPage(QWidget):
                 "나머지 변수를 고정한 채 이 변수 하나만 바뀌면 지표가 얼마나 바뀌는지를 봅니다."
             )
         )
+        regression_row = QHBoxLayout()
+        regression_row.addWidget(QLabel("지표:"))
+        self.regression_metric_combo = QComboBox()
+        regression_row.addWidget(self.regression_metric_combo)
+        regression_row.addStretch(1)
+        layout.addLayout(regression_row)
+
         self.regression_canvas = MplCanvas(figsize=(6, 3))
         layout.addWidget(self.regression_canvas)
         self.regression_caption_label = QLabel("")
@@ -442,7 +455,8 @@ class ComparisonPage(QWidget):
         self._current_regression_result = None
         self._whatif_inputs: dict = {}
 
-        self.sens_metric_combo.currentIndexChanged.connect(self._replot_sensitivity)
+        self.sens_metric_combo.currentIndexChanged.connect(self._on_sens_metric_combo_changed)
+        self.regression_metric_combo.currentIndexChanged.connect(self._on_regression_metric_combo_changed)
         self.btn_whatif_predict.clicked.connect(self._on_whatif_predict)
 
         # 이 탭은 내용이 많아져서(작은 산점도들 + 요약표 + 회귀 + 예측 폼) 한 화면에 안 들어갈
@@ -451,6 +465,24 @@ class ComparisonPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setWidget(w)
         return scroll
+
+    def _on_sens_metric_combo_changed(self) -> None:
+        # 맨 위 지표 선택과 다중회귀 섹션의 지표 선택은 같은 값을 보여주도록 맞춰둔다 —
+        # 아래로 스크롤한 채로 지표만 바꾸고 싶을 때 위로 다시 올라갈 필요가 없게 하기 위해서다.
+        self.regression_metric_combo.blockSignals(True)
+        idx = self.regression_metric_combo.findText(self.sens_metric_combo.currentText())
+        if idx >= 0:
+            self.regression_metric_combo.setCurrentIndex(idx)
+        self.regression_metric_combo.blockSignals(False)
+        self._replot_sensitivity()
+
+    def _on_regression_metric_combo_changed(self) -> None:
+        self.sens_metric_combo.blockSignals(True)
+        idx = self.sens_metric_combo.findText(self.regression_metric_combo.currentText())
+        if idx >= 0:
+            self.sens_metric_combo.setCurrentIndex(idx)
+        self.sens_metric_combo.blockSignals(False)
+        self._replot_sensitivity()
 
     def _replot_sensitivity(self) -> None:
         metric = self.sens_metric_combo.currentText()
