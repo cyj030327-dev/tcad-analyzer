@@ -1,5 +1,11 @@
 from .correlation import compute_correlation
 from .filtering import filter_by_ranges
+from .regression import (
+    RegressionResult,
+    build_regression_summary,
+    describe_regression_effect,
+    fit_multivariate_model,
+)
 from .sensitivity import (
     build_sensitivity_table,
     compute_sensitivity_summary,
@@ -37,4 +43,8 @@ __all__ = [
     "pareto_front",
     "resolve_weights",
     "recommend_optimal",
+    "RegressionResult",
+    "fit_multivariate_model",
+    "describe_regression_effect",
+    "build_regression_summary",
 ]

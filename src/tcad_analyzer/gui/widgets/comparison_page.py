@@ -8,9 +8,11 @@ import numpy as np
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
@@ -28,11 +30,14 @@ from ...analysis import (
     DEFAULT_METRIC_DIRECTIONS,
     MetricDirection,
     OptimizationProfile,
+    build_regression_summary,
     build_sensitivity_table,
     compute_correlation,
     compute_sensitivity_summary,
+    describe_regression_effect,
     describe_relationship,
     filter_by_ranges,
+    fit_multivariate_model,
     numeric_attribute_names,
     recommend_optimal,
     summarize_by_split,
@@ -133,6 +138,7 @@ class ComparisonPage(QWidget):
         self._replot_correlation()
         self._replot_sensitivity()
         self._refresh_sensitivity_summary()
+        self._refresh_regression_summary()
 
     # --------------------------------------------------------- distribution
     def _build_distribution_tab(self) -> QWidget:
@@ -387,15 +393,64 @@ class ComparisonPage(QWidget):
         layout.addWidget(self.sens_caption_label)
 
         layout.addWidget(
-            QLabel("지표별로 묶어서, 그 지표에 영향이 큰 공정변수 순으로 정리한 전체 요약:")
+            QLabel("지표별로 묶어서, 그 지표에 영향이 큰 공정변수 순으로 정리한 전체 요약(단순 상관):")
         )
         self.sens_summary_table = QTableWidget(0, 5)
         self.sens_summary_table.setHorizontalHeaderLabels(["지표", "공정변수", "r", "n", "설명"])
         self.sens_summary_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         layout.addWidget(self.sens_summary_table)
 
+        # ------------------------------------------------------- 다중회귀
+        layout.addWidget(
+            QLabel(
+                "── 다중회귀: 여러 공정변수를 동시에 고려해 순수한 영향만 분리 ──\n"
+                "위 상관관계는 변수 하나씩 따로 보기 때문에, 변수들이 서로 얽혀서 같이 움직이면"
+                "(예: Nd를 올릴 때 Nta도 같이 올라가게 설계됐다면) 헷갈릴 수 있어요. 여기는 "
+                "나머지 변수를 고정한 채 이 변수 하나만 바뀌면 지표가 얼마나 바뀌는지를 봅니다."
+            )
+        )
+        self.regression_canvas = MplCanvas(figsize=(6, 3))
+        layout.addWidget(self.regression_canvas)
+        self.regression_caption_label = QLabel("")
+        self.regression_caption_label.setWordWrap(True)
+        layout.addWidget(self.regression_caption_label)
+
+        layout.addWidget(QLabel("지표별 다중회귀 요약(표준화 계수 절댓값이 큰 변수 순):"))
+        self.regression_summary_table = QTableWidget(0, 6)
+        self.regression_summary_table.setHorizontalHeaderLabels(
+            ["지표", "공정변수", "표준화계수", "R²", "n", "설명"]
+        )
+        self.regression_summary_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        layout.addWidget(self.regression_summary_table)
+
+        # --------------------------------------------------------- what-if
+        whatif_box = QGroupBox("예측(what-if): 이 조건을 넣으면 지표가 대략 얼마일지")
+        whatif_layout = QVBoxLayout(whatif_box)
+        whatif_layout.addWidget(
+            QLabel("바로 위 다중회귀 모델을 그대로 써서 예측합니다 — 안 해본 공정 조건 조합을 넣어보세요.")
+        )
+        self.whatif_form_container = QWidget()
+        self.whatif_form = QFormLayout(self.whatif_form_container)
+        whatif_layout.addWidget(self.whatif_form_container)
+        self.btn_whatif_predict = QPushButton("예측 계산")
+        whatif_layout.addWidget(self.btn_whatif_predict)
+        self.whatif_result_label = QLabel("")
+        self.whatif_result_label.setWordWrap(True)
+        whatif_layout.addWidget(self.whatif_result_label)
+        layout.addWidget(whatif_box)
+
+        self._current_regression_result = None
+        self._whatif_inputs: dict = {}
+
         self.sens_metric_combo.currentIndexChanged.connect(self._replot_sensitivity)
-        return w
+        self.btn_whatif_predict.clicked.connect(self._on_whatif_predict)
+
+        # 이 탭은 내용이 많아져서(작은 산점도들 + 요약표 + 회귀 + 예측 폼) 한 화면에 안 들어갈
+        # 수 있다 — 각 구성요소가 눌려 찌그러지지 않도록 탭 전체를 스크롤 가능하게 감싼다.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(w)
+        return scroll
 
     def _replot_sensitivity(self) -> None:
         metric = self.sens_metric_combo.currentText()
@@ -441,6 +496,9 @@ class ComparisonPage(QWidget):
         self.sens_canvas.draw()
         self.sens_caption_label.setText("\n".join(captions))
 
+        self._replot_regression()
+        self._rebuild_whatif_form()
+
     def _refresh_sensitivity_summary(self) -> None:
         summary = compute_sensitivity_summary(self._filtered_params(), self._param_names())
         self.sens_summary_table.setRowCount(len(summary))
@@ -448,6 +506,93 @@ class ComparisonPage(QWidget):
             for j, val in enumerate(row):
                 text = f"{val:.4g}" if isinstance(val, float) else str(val)
                 self.sens_summary_table.setItem(i, j, QTableWidgetItem(text))
+
+    # -------------------------------------------------- multiple regression
+    def _replot_regression(self) -> None:
+        metric = self.sens_metric_combo.currentText()
+        self.regression_canvas.figure.clear()
+        self._current_regression_result = None
+
+        if not metric:
+            self.regression_canvas.draw()
+            self.regression_caption_label.setText("")
+            return
+
+        result = fit_multivariate_model(self._filtered_params(), metric)
+        if result is None:
+            self.regression_canvas.draw()
+            self.regression_caption_label.setText(
+                "다중회귀 모델을 만들기엔 데이터(또는 서로 다른 값을 가진 공정변수)가 부족합니다."
+            )
+            return
+
+        self._current_regression_result = result
+        ranked = result.ranked_attributes()
+        betas = [result.standardized_coefficients[a] for a in ranked]
+        colors = ["#c0392b" if b >= 0 else "#2980b9" for b in betas]
+
+        ax = self.regression_canvas.figure.add_subplot(111)
+        ax.barh(ranked, betas, color=colors)
+        ax.axvline(0, color="black", linewidth=0.8)
+        ax.set_xlabel("표준화 계수 (절댓값이 클수록 순수한 영향이 큼)")
+        ax.invert_yaxis()  # 가장 영향 큰 변수가 위로 오게
+        self.regression_canvas.figure.tight_layout()
+        self.regression_canvas.draw()
+
+        captions = [f"모델 적합도 R² = {result.r_squared:.3f} (n={result.n})"]
+        captions += [f"• {describe_regression_effect(a, metric, result.standardized_coefficients[a])}" for a in ranked]
+        self.regression_caption_label.setText("\n".join(captions))
+
+    def _refresh_regression_summary(self) -> None:
+        summary = build_regression_summary(self._filtered_params(), self._param_names())
+        self.regression_summary_table.setRowCount(len(summary))
+        for i, row in enumerate(summary.itertuples(index=False)):
+            for j, val in enumerate(row):
+                text = f"{val:.4g}" if isinstance(val, float) else str(val)
+                self.regression_summary_table.setItem(i, j, QTableWidgetItem(text))
+
+    # --------------------------------------------------------------- what-if
+    def _rebuild_whatif_form(self) -> None:
+        while self.whatif_form.rowCount() > 0:
+            self.whatif_form.removeRow(0)
+        self._whatif_inputs: dict = {}
+        self.whatif_result_label.setText("")
+
+        result = self._current_regression_result
+        if result is None:
+            return
+        for attr in result.attribute_names:
+            edit = QLineEdit()
+            lo, hi = result.attribute_ranges[attr]
+            mid = (lo + hi) / 2
+            edit.setPlaceholderText(f"관측범위 {lo:.4g}~{hi:.4g}")
+            edit.setText(f"{mid:.4g}")
+            self.whatif_form.addRow(attr, edit)
+            self._whatif_inputs[attr] = edit
+
+    def _on_whatif_predict(self) -> None:
+        result = self._current_regression_result
+        if result is None:
+            self.whatif_result_label.setText("먼저 다중회귀 모델이 만들어져야 예측할 수 있습니다.")
+            return
+        values = {}
+        for attr, edit in self._whatif_inputs.items():
+            text = edit.text().strip()
+            try:
+                values[attr] = float(text)
+            except ValueError:
+                self.whatif_result_label.setText(f"'{attr}' 값을 숫자로 입력하세요.")
+                return
+
+        predicted = result.predict(values)
+        metric = self.sens_metric_combo.currentText()
+        out_of_range = [
+            attr for attr, (lo, hi) in result.attribute_ranges.items() if not (lo <= values[attr] <= hi)
+        ]
+        msg = f"예측 {metric} ≈ {predicted:.4g} (모델 R²={result.r_squared:.3f}, n={result.n})"
+        if out_of_range:
+            msg += f"\n⚠ {', '.join(out_of_range)} 값이 관측 범위 밖이라 외삽입니다 — 신뢰도가 더 낮을 수 있습니다."
+        self.whatif_result_label.setText(msg)
 
     # ----------------------------------------------------------- recommend
     def _build_recommend_tab(self) -> QWidget:
