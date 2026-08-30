@@ -253,16 +253,24 @@ class SprocessSummary:
         return not (self.gate_oxide_thickness_um or self.channel_length_um)
 
 
+_SDEVICE_BLOCK_RE = re.compile(r"\b(Electrode|Solve)\s*\{")
+# sprocess는 `#`, sdevice는 `*`로 줄 주석을 쓴다 — 설명용 주석 안에서 우연히 "Electrode"
+# 같은 단어를 언급해도(예: 이 파일이 sdevice .cmd와 어떻게 맞물리는지 적어두는 경우)
+# 오탐이 안 나도록, 판별 전에 주석 줄은 미리 지운다.
+_COMMENT_LINE_RE = re.compile(r"^\s*[#*].*$", re.MULTILINE)
+
+
 def looks_like_sprocess(text: str) -> bool:
     """파일 앞부분만 보고 sprocess 지오메트리 스크립트인지 가볍게 판별(sdevice .cmd와 구분용).
 
     sdevice .cmd는 `Electrode {`/`Solve {`처럼 대문자로 시작하는 블록 키워드를 쓰는 반면,
     sprocess 스크립트는 `line x/y/z`, `deposit`, `struct tdr=` 같은 소문자 명령을 쓴다.
     """
-    head = text[:4000]
-    if "Electrode" in head or "Solve {" in head:
+    code_only = _COMMENT_LINE_RE.sub("", text)
+    head = code_only[:4000]
+    if _SDEVICE_BLOCK_RE.search(head):
         return False
-    return bool(_STRUCT_TDR_RE.search(text)) or bool(re.search(r"^\s*line\s+[xyz]\s", head, re.MULTILINE))
+    return bool(_STRUCT_TDR_RE.search(code_only)) or bool(re.search(r"^\s*line\s+[xyz]\s", head, re.MULTILINE))
 
 
 def parse_sprocess_cmd(path: Path) -> SprocessSummary:

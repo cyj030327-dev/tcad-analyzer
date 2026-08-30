@@ -121,6 +121,17 @@ def test_looks_like_sprocess_rejects_sdevice_cmd():
     assert looks_like_sprocess(SDEVICE_STYLE) is False
 
 
+def test_looks_like_sprocess_ignores_electrode_mentioned_only_in_comment():
+    # sprocess 문법이지만, 설명용 주석 줄 안에서 "Electrode"라는 단어를 언급하는 경우
+    # (예: sdevice .cmd와 이름을 맞춰야 한다는 설명) — 실제 Electrode { 블록이 없으므로
+    # sdevice로 오분류되면 안 된다.
+    text = (
+        REAL_STYLE_SPROCESS
+        + '\n# sdevice .cmd의 Electrode 블록도 반드시 이 이름과 맞춰야 한다.\n'
+    )
+    assert looks_like_sprocess(text) is True
+
+
 def test_parse_sprocess_extracts_gate_oxide_thickness_and_permittivity(tmp_path):
     path = tmp_path / "pp55_fps.cmd"
     path.write_text(REAL_STYLE_SPROCESS, encoding="utf-8")
