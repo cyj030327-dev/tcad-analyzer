@@ -7,10 +7,12 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from .gui.main_window import MainWindow
+from .gui.theme import APP_QSS
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setStyleSheet(APP_QSS)
     window = MainWindow()
     window.show()
     return app.exec()
